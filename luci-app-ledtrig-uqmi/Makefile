@@ -24,6 +24,10 @@ endef
 
 define Package/$(PKG_NAME)/postinst
 #!/bin/sh
+# make sure init script and binary are executable
+chmod +x /etc/init.d/ledtrig-uqmi || true
+chmod +x /usr/libexec/ledtrig-uqmi || true
+# enable service for convenience
 /etc/init.d/ledtrig-uqmi enable >/dev/null 2>&1 || true
 endef
 

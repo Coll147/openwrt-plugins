@@ -20,8 +20,8 @@ endef
 # ensure permissions after install on target
 define Package/$(PKG_NAME)/postinst
 	# make sure init script and binary are executable
-	sh chmod +x /etc/init.d/ledtrig-ping || true
-	sh chmod +x /usr/libexec/ledtrig-ping || true
+	chmod +x /etc/init.d/ledtrig-ping || true
+	chmod +x /usr/libexec/ledtrig-ping || true
 	# enable service for convenience
 	sh /etc/init.d/ledtrig-ping enable >/dev/null 2>&1 || true
 endef
