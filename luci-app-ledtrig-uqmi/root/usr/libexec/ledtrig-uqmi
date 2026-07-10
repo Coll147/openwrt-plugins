@@ -7,38 +7,114 @@ LEDS_PATH="/sys/class/leds"
 DEFAULT_DEVICE="/dev/cdc-wdm0"
 DEFAULT_THRESHOLD="-80"
 DEFAULT_INTERVAL=10
+TAG="ledtrig-uqmi"
+
+log_err()  { logger -t "$TAG" -p daemon.err  "$1"; }
+log_info() { logger -t "$TAG" -p daemon.info "$1"; }
+log_dbg()  { logger -t "$TAG" -p daemon.debug "$1"; }
+
+log_info "Servicio iniciado (PID $$)"
+
+if ! command -v uqmi >/dev/null 2>&1; then
+	log_err "El binario 'uqmi' no está instalado (falta el paquete 'uqmi'). El LED nunca se activará sin él."
+fi
+
+if [ ! -d "$LEDS_PATH" ]; then
+	log_err "No existe $LEDS_PATH; el kernel no expone LEDs via sysfs en este dispositivo"
+	exit 1
+fi
+
+STATE_DIR="/tmp/ledtrig-uqmi.state"
+mkdir -p "$STATE_DIR"
 
 while true; do
+	led_found=0
+	interval_for_sleep=""
+
 	for sec in $(uci show system 2>/dev/null | sed -n 's/^system\.\([^.=]*\)\.trigger=.*/\1/p'); do
+		trigger=$(uci -q get system.$sec.trigger 2>/dev/null)
+		[ "$trigger" != "uqmi-rssi" ] && continue
 
-		[ "$(uci -q get system.$sec.trigger)" = "uqmi-rssi" ] || continue
+		led_found=1
 
-		sysfs=$(uci -q get system.$sec.sysfs)
-		device=$(uci -q get system.$sec.device)
-		threshold=$(uci -q get system.$sec.threshold)
-		interval=$(uci -q get system.$sec.interval)
+		sysfs=$(uci -q get system.$sec.sysfs 2>/dev/null)
+		device=$(uci -q get system.$sec.device 2>/dev/null)
+		threshold=$(uci -q get system.$sec.threshold 2>/dev/null)
+		interval=$(uci -q get system.$sec.interval 2>/dev/null)
 
 		device="${device:-$DEFAULT_DEVICE}"
 		threshold="${threshold:-$DEFAULT_THRESHOLD}"
 		interval="${interval:-$DEFAULT_INTERVAL}"
+		if ! echo "$interval" | grep -q '^[0-9]\+$' || [ "$interval" -lt 1 ]; then
+			interval=$DEFAULT_INTERVAL
+		fi
 
-		[ -d "$LEDS_PATH/$sysfs" ] || continue
+		if [ -z "$sysfs" ]; then
+			log_err "Sección $sec: falta el parámetro 'sysfs' (nombre del LED)"
+			continue
+		fi
+
+		if [ ! -d "$LEDS_PATH/$sysfs" ]; then
+			log_err "Sección $sec: no existe $LEDS_PATH/$sysfs. LEDs disponibles: $(ls "$LEDS_PATH" 2>/dev/null | tr '\n' ' ')"
+			continue
+		fi
+
+		if [ ! -e "$device" ]; then
+			log_err "Sección $sec: no existe el dispositivo $device (¿módem no detectado o nodo QMI distinto?)"
+			continue
+		fi
 
 		# Read RSSI from modem
-		rssi=$(uqmi -d "$device" --get-signal-info 2>/dev/null \
+		uqmi_raw=$(uqmi -d "$device" --get-signal-info 2>&1)
+		uqmi_rc=$?
+		if [ $uqmi_rc -ne 0 ]; then
+			log_err "Sección $sec: 'uqmi -d $device --get-signal-info' falló (rc=$uqmi_rc): $uqmi_raw"
+		fi
+
+		rssi=$(echo "$uqmi_raw" \
 		       | grep -o '"rssi"[[:space:]]*:[[:space:]]*-\{0,1\}[0-9]*' \
 		       | grep -o -- '-\{0,1\}[0-9]*$')
 
-		# Switch to manual control
-		echo "none" > "$LEDS_PATH/$sysfs/trigger" 2>/dev/null
-
-		# ON if signal is good enough, OFF otherwise
-		if [ -n "$rssi" ] && [ "$rssi" -ge "$threshold" ] 2>/dev/null; then
-			echo 255 > "$LEDS_PATH/$sysfs/brightness" 2>/dev/null
+		if [ -z "$rssi" ]; then
+			log_err "Sección $sec: no se pudo extraer RSSI de la respuesta de uqmi (salida: $uqmi_raw)"
 		else
-			echo 0   > "$LEDS_PATH/$sysfs/brightness" 2>/dev/null
+			log_dbg "Sección $sec: RSSI=$rssi threshold=$threshold"
 		fi
+
+		# Switch to manual control
+		if ! echo "none" > "$LEDS_PATH/$sysfs/trigger" 2>/dev/null; then
+			log_err "Sección $sec: no se pudo escribir 'none' en $LEDS_PATH/$sysfs/trigger (¿permiso denegado o trigger fijo por el driver/hardware?)"
+			continue
+		fi
+
+		if [ -n "$rssi" ] && [ "$rssi" -ge "$threshold" ] 2>/dev/null; then
+			value=255
+			good_signal=1
+		else
+			value=0
+			good_signal=0
+		fi
+
+		if echo "$value" > "$LEDS_PATH/$sysfs/brightness" 2>/dev/null; then
+			write_ok=1
+		else
+			write_ok=0
+			log_err "Sección $sec: no se pudo escribir brightness=$value en $LEDS_PATH/$sysfs/brightness (¿permiso denegado o LED de solo lectura?)"
+		fi
+
+		state_file="$STATE_DIR/$sec"
+		prev_value=$(cat "$state_file" 2>/dev/null)
+		if [ "$write_ok" = 1 ] && [ "$value" != "$prev_value" ]; then
+			log_info "Sección $sec: LED $sysfs -> brightness=$value (rssi=${rssi:-desconocido}, threshold=$threshold, good_signal=$good_signal)"
+			echo "$value" > "$state_file"
+		fi
+
+		interval_for_sleep=$interval
 	done
 
-	sleep "$DEFAULT_INTERVAL"
+	if [ $led_found -eq 0 ]; then
+		log_info "No hay ninguna sección system.@led[] con trigger='uqmi-rssi' configurada"
+	fi
+
+	sleep "${interval_for_sleep:-$DEFAULT_INTERVAL}"
 done
