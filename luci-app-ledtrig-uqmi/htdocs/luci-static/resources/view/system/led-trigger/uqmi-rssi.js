@@ -29,6 +29,7 @@ return baseclass.extend({
 		o.datatype    = 'uinteger';
 		o.rmempty     = true;
 		o.modalonly   = true;
+		o.description = _('Ping interval in seconds');
 		o.depends('trigger', 'uqmi-rssi');
 	}
 });
