@@ -1,30 +1,40 @@
 #!/bin/sh
 # LED trigger: ping target. Reads UCI system.@led[], for each with trigger=ping
 # sets LED to "none" and drives brightness by pinging the configured target.
+# El 'interval' de cada sección se interpreta en milisegundos.
 
 LEDS_PATH="/sys/class/leds"
-DEFAULT_INTERVAL=5
+DEFAULT_INTERVAL_MS=5000
+MIN_INTERVAL_MS=1000
 TAG="ledtrig-ping"
 
 log_err()  { logger -t "$TAG" -p daemon.err  "$1"; }
 log_info() { logger -t "$TAG" -p daemon.info "$1"; }
 log_dbg()  { logger -t "$TAG" -p daemon.debug "$1"; }
 
+# Convierte milisegundos a un argumento válido para 'sleep' (X.YYY)
+ms_to_sleep_arg() {
+	ms=$1
+	echo "$ms" | grep -q '^[0-9]\+$' || ms=$DEFAULT_INTERVAL_MS
+	[ "$ms" -lt "$MIN_INTERVAL_MS" ] && ms=$MIN_INTERVAL_MS
+	sec=$((ms / 1000))
+	rem=$((ms % 1000))
+	printf '%d.%03d' "$sec" "$rem"
+}
+
 log_info "Servicio iniciado (PID $$)"
 
-# Validate LED path exists
 if [ ! -d "$LEDS_PATH" ]; then
 	log_err "No existe $LEDS_PATH; el kernel no expone LEDs via sysfs en este dispositivo"
 	exit 1
 fi
 
-# Track previous state per section to only log transitions (evita saturar el log)
 STATE_DIR="/tmp/ledtrig-ping.state"
 mkdir -p "$STATE_DIR"
 
 while true; do
 	led_found=0
-	interval_for_sleep=""
+	next_sleep_ms=""
 
 	for sec in $(uci show system 2>/dev/null | sed -n 's/^system\.\([^.=]*\)\.trigger=.*/\1/p'); do
 		trigger=$(uci -q get system.$sec.trigger 2>/dev/null)
@@ -35,7 +45,7 @@ while true; do
 		sysfs=$(uci -q get system.$sec.sysfs 2>/dev/null)
 		target=$(uci -q get system.$sec.target 2>/dev/null)
 		invert=$(uci -q get system.$sec.invert 2>/dev/null)
-		interval=$(uci -q get system.$sec.interval 2>/dev/null)
+		interval_ms=$(uci -q get system.$sec.interval 2>/dev/null)
 		invert=${invert:-0}
 
 		if [ -z "$sysfs" ]; then
@@ -48,9 +58,9 @@ while true; do
 			continue
 		fi
 
-		if ! echo "$interval" | grep -q '^[0-9]\+$' || [ "$interval" -lt 1 ]; then
-			[ -n "$interval" ] && log_err "Sección $sec: interval '$interval' inválido, uso $DEFAULT_INTERVAL"
-			interval=$DEFAULT_INTERVAL
+		if ! echo "$interval_ms" | grep -q '^[0-9]\+$'; then
+			[ -n "$interval_ms" ] && log_err "Sección $sec: interval '$interval_ms' inválido, uso ${DEFAULT_INTERVAL_MS}ms"
+			interval_ms=$DEFAULT_INTERVAL_MS
 		fi
 
 		if [ ! -d "$LEDS_PATH/$sysfs" ]; then
@@ -92,12 +102,16 @@ while true; do
 			echo "$value" > "$state_file"
 		fi
 
-		interval_for_sleep=$interval
+		# Cada LED de ping conserva su propio intervalo: dormimos el
+		# mínimo de todos para no retrasar la comprobación de ninguno.
+		if [ -z "$next_sleep_ms" ] || [ "$interval_ms" -lt "$next_sleep_ms" ]; then
+			next_sleep_ms=$interval_ms
+		fi
 	done
 
 	if [ $led_found -eq 0 ]; then
 		log_info "No hay ninguna sección system.@led[] con trigger='ping' configurada"
 	fi
 
-	sleep "${interval_for_sleep:-$DEFAULT_INTERVAL}"
+	sleep "$(ms_to_sleep_arg "${next_sleep_ms:-$DEFAULT_INTERVAL_MS}")"
 done

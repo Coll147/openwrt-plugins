@@ -15,13 +15,13 @@ return baseclass.extend({
 		o.modalonly = true;
 		o.depends('trigger', 'ping');
 
-		o = s.option(form.Value, 'interval', _('Check interval (seconds)'));
-		o.placeholder = '5';
+		o = s.option(form.Value, 'interval', _('Check interval (ms)'));
+		o.placeholder = '5000';
 		o.datatype = 'uinteger';
-		o.rmempty = false;
+		o.rmempty = true;
 		o.modalonly = true;
-		o.description = _('Ping check interval (seconds)');
 		o.depends('trigger', 'ping');
+		o.description = _('Time between checks, in milliseconds (minimum 100ms).');
 
 		o = s.option(form.Flag, 'invert', _('Light on failure'));
 		o.modalonly = true;

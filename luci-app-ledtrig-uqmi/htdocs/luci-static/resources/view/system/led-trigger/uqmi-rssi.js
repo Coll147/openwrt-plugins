@@ -24,12 +24,16 @@ return baseclass.extend({
 		o.depends('trigger', 'uqmi-rssi');
 		o.description = _('LED turns ON when RSSI is at or above this value (default: −80 dBm)');
 
-		o = s.option(form.Value, 'interval', _('Poll interval (seconds)'));
-		o.placeholder = '10';
+		o = s.option(form.Value, 'interval', _('Poll interval (ms)'));
+		o.placeholder = '10000';
 		o.datatype    = 'uinteger';
 		o.rmempty     = true;
 		o.modalonly   = true;
-		o.description = _('Check interval (seconds)');
 		o.depends('trigger', 'uqmi-rssi');
+		o.description = _('Time between modem queries, in milliseconds (minimum 100ms). ' +
+			'Only one uqmi-rssi LED\'s interval is used: if you configure several LEDs ' +
+			'of this type, the value from the first one is applied to all of them, and ' +
+			'a single modem query is shared between LEDs pointing at the same device, ' +
+			'to avoid flooding the modem with requests.');
 	}
 });

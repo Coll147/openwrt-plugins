@@ -2,16 +2,41 @@
 # LED trigger: 4G signal via uqmi
 # LED ON  → RSSI >= threshold (good signal)
 # LED OFF → RSSI <  threshold (bad signal / no signal)
+#
+# Si hay varias secciones system.@led[] con trigger='uqmi-rssi':
+#   - Solo se hace UNA consulta 'uqmi --get-signal-info' por cada 'device'
+#     distinto en cada vuelta, y el resultado se reutiliza para todos los
+#     LEDs que apunten a ese mismo device (evita saturar el módem).
+#   - El intervalo de sondeo es único para todo el demonio: se toma de la
+#     PRIMERA sección encontrada (en milisegundos); el 'interval' del
+#     resto de secciones se ignora.
 
 LEDS_PATH="/sys/class/leds"
 DEFAULT_DEVICE="/dev/cdc-wdm0"
 DEFAULT_THRESHOLD="-80"
-DEFAULT_INTERVAL=10
+DEFAULT_INTERVAL_MS=10000
+MIN_INTERVAL_MS=100
 TAG="ledtrig-uqmi"
 
 log_err()  { logger -t "$TAG" -p daemon.err  "$1"; }
 log_info() { logger -t "$TAG" -p daemon.info "$1"; }
 log_dbg()  { logger -t "$TAG" -p daemon.debug "$1"; }
+
+# Convierte milisegundos a un argumento válido para 'sleep' (X.YYY)
+ms_to_sleep_arg() {
+	ms=$1
+	echo "$ms" | grep -q '^[0-9]\+$' || ms=$DEFAULT_INTERVAL_MS
+	[ "$ms" -lt "$MIN_INTERVAL_MS" ] && ms=$MIN_INTERVAL_MS
+	sec=$((ms / 1000))
+	rem=$((ms % 1000))
+	printf '%d.%03d' "$sec" "$rem"
+}
+
+# Convierte un device (p.ej. /dev/cdc-wdm0) en un sufijo válido para
+# nombre de variable, para poder usarlo como "caché" con eval.
+safe_key() {
+	echo "$1" | tr -c 'A-Za-z0-9' '_'
+}
 
 log_info "Servicio iniciado (PID $$)"
 
@@ -29,25 +54,72 @@ mkdir -p "$STATE_DIR"
 
 while true; do
 	led_found=0
-	interval_for_sleep=""
+	interval_ms=""
+	devices_seen=""
+	sections=""
 
+	# --- Fase 1: recopilar secciones válidas + intervalo global (de la 1ª) ---
 	for sec in $(uci show system 2>/dev/null | sed -n 's/^system\.\([^.=]*\)\.trigger=.*/\1/p'); do
-		trigger=$(uci -q get system.$sec.trigger 2>/dev/null)
-		[ "$trigger" != "uqmi-rssi" ] && continue
-
+		[ "$(uci -q get system.$sec.trigger)" = "uqmi-rssi" ] || continue
 		led_found=1
+		sections="$sections $sec"
 
+		if [ -z "$interval_ms" ]; then
+			cfg_interval=$(uci -q get system.$sec.interval 2>/dev/null)
+			if [ -n "$cfg_interval" ] && echo "$cfg_interval" | grep -q '^[0-9]\+$'; then
+				interval_ms=$cfg_interval
+			else
+				interval_ms=$DEFAULT_INTERVAL_MS
+			fi
+			log_dbg "Intervalo global tomado de la sección $sec: ${interval_ms}ms (el resto de secciones lo ignoran)"
+		fi
+	done
+
+	# --- Fase 2: una sola consulta uqmi por cada 'device' distinto ---
+	for sec in $sections; do
+		device=$(uci -q get system.$sec.device 2>/dev/null)
+		device="${device:-$DEFAULT_DEVICE}"
+		key=$(safe_key "$device")
+
+		case " $devices_seen " in
+			*" $key "*) continue ;;
+		esac
+		devices_seen="$devices_seen $key"
+
+		if [ ! -e "$device" ]; then
+			log_err "Dispositivo $device no existe (¿módem no detectado o nodo QMI distinto?)"
+			eval "rssi_$key="
+			continue
+		fi
+
+		uqmi_raw=$(uqmi -d "$device" --get-signal-info 2>&1)
+		uqmi_rc=$?
+		if [ $uqmi_rc -ne 0 ]; then
+			log_err "'uqmi -d $device --get-signal-info' falló (rc=$uqmi_rc): $uqmi_raw"
+		fi
+
+		rssi=$(echo "$uqmi_raw" \
+		       | grep -o '"rssi"[[:space:]]*:[[:space:]]*-\{0,1\}[0-9]*' \
+		       | grep -o -- '-\{0,1\}[0-9]*$')
+
+		if [ -z "$rssi" ]; then
+			log_err "No se pudo extraer RSSI de $device (salida: $uqmi_raw)"
+		else
+			log_dbg "Consulta única a $device -> RSSI=$rssi (compartida por todos los LEDs de ese device)"
+		fi
+
+		eval "rssi_$key=\"$rssi\""
+	done
+
+	# --- Fase 3: aplicar el RSSI cacheado a cada sección/LED ---
+	for sec in $sections; do
 		sysfs=$(uci -q get system.$sec.sysfs 2>/dev/null)
 		device=$(uci -q get system.$sec.device 2>/dev/null)
 		threshold=$(uci -q get system.$sec.threshold 2>/dev/null)
-		interval=$(uci -q get system.$sec.interval 2>/dev/null)
-
 		device="${device:-$DEFAULT_DEVICE}"
 		threshold="${threshold:-$DEFAULT_THRESHOLD}"
-		interval="${interval:-$DEFAULT_INTERVAL}"
-		if ! echo "$interval" | grep -q '^[0-9]\+$' || [ "$interval" -lt 1 ]; then
-			interval=$DEFAULT_INTERVAL
-		fi
+		key=$(safe_key "$device")
+		eval "rssi=\"\$rssi_$key\""
 
 		if [ -z "$sysfs" ]; then
 			log_err "Sección $sec: falta el parámetro 'sysfs' (nombre del LED)"
@@ -59,29 +131,6 @@ while true; do
 			continue
 		fi
 
-		if [ ! -e "$device" ]; then
-			log_err "Sección $sec: no existe el dispositivo $device (¿módem no detectado o nodo QMI distinto?)"
-			continue
-		fi
-
-		# Read RSSI from modem
-		uqmi_raw=$(uqmi -d "$device" --get-signal-info 2>&1)
-		uqmi_rc=$?
-		if [ $uqmi_rc -ne 0 ]; then
-			log_err "Sección $sec: 'uqmi -d $device --get-signal-info' falló (rc=$uqmi_rc): $uqmi_raw"
-		fi
-
-		rssi=$(echo "$uqmi_raw" \
-		       | grep -o '"rssi"[[:space:]]*:[[:space:]]*-\{0,1\}[0-9]*' \
-		       | grep -o -- '-\{0,1\}[0-9]*$')
-
-		if [ -z "$rssi" ]; then
-			log_err "Sección $sec: no se pudo extraer RSSI de la respuesta de uqmi (salida: $uqmi_raw)"
-		else
-			log_dbg "Sección $sec: RSSI=$rssi threshold=$threshold"
-		fi
-
-		# Switch to manual control
 		if ! echo "none" > "$LEDS_PATH/$sysfs/trigger" 2>/dev/null; then
 			log_err "Sección $sec: no se pudo escribir 'none' en $LEDS_PATH/$sysfs/trigger (¿permiso denegado o trigger fijo por el driver/hardware?)"
 			continue
@@ -89,10 +138,8 @@ while true; do
 
 		if [ -n "$rssi" ] && [ "$rssi" -ge "$threshold" ] 2>/dev/null; then
 			value=255
-			good_signal=1
 		else
 			value=0
-			good_signal=0
 		fi
 
 		if echo "$value" > "$LEDS_PATH/$sysfs/brightness" 2>/dev/null; then
@@ -105,16 +152,14 @@ while true; do
 		state_file="$STATE_DIR/$sec"
 		prev_value=$(cat "$state_file" 2>/dev/null)
 		if [ "$write_ok" = 1 ] && [ "$value" != "$prev_value" ]; then
-			log_info "Sección $sec: LED $sysfs -> brightness=$value (rssi=${rssi:-desconocido}, threshold=$threshold, good_signal=$good_signal)"
+			log_info "Sección $sec: LED $sysfs -> brightness=$value (device=$device, rssi=${rssi:-desconocido}, threshold=$threshold)"
 			echo "$value" > "$state_file"
 		fi
-
-		interval_for_sleep=$interval
 	done
 
 	if [ $led_found -eq 0 ]; then
 		log_info "No hay ninguna sección system.@led[] con trigger='uqmi-rssi' configurada"
 	fi
 
-	sleep "${interval_for_sleep:-$DEFAULT_INTERVAL}"
+	sleep "$(ms_to_sleep_arg "${interval_ms:-$DEFAULT_INTERVAL_MS}")"
 done
