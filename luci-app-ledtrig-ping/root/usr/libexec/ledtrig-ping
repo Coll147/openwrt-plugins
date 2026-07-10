@@ -3,7 +3,7 @@
 # sets LED to "none" and drives brightness by pinging the configured target.
 
 LEDS_PATH="/sys/class/leds"
-DEFAULT_INTERVAL=5
+DEFAULT_INTERVAL=10
 MIN_INTERVAL=1
 TAG="ledtrig-ping"
 
