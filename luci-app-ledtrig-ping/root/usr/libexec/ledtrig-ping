@@ -3,7 +3,7 @@
 # sets LED to "none" and drives brightness by pinging the configured target.
 
 LEDS_PATH="/sys/class/leds"
-DEFAULT_INTERVAL=10
+DEFAULT_INTERVAL=5
 MIN_INTERVAL=1
 TAG="ledtrig-ping"
 
@@ -69,13 +69,13 @@ while true; do
 		else
 			reachable=0
 		fi
-		log_dbg "Sección $sec: ping a $target -> $([ "$reachable" = 1 ] && echo alcanzable || echo inalcanzable)"
 
 		if [ "$reachable" = 1 ]; then
 			[ "$invert" = "1" ] && value=0 || value=255
 		else
 			[ "$invert" = "1" ] && value=255 || value=0
 		fi
+		log_dbg "Sección $sec: target=$target reachable=$reachable invert=$invert -> $([ "$value" = 255 ] && echo ON || echo OFF) (sysfs=$sysfs)"
 
 		if echo "$value" > "$LEDS_PATH/$sysfs/brightness" 2>/dev/null; then
 			write_ok=1

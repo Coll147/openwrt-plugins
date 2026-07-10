@@ -14,8 +14,8 @@
 LEDS_PATH="/sys/class/leds"
 DEFAULT_DEVICE="/dev/cdc-wdm0"
 DEFAULT_THRESHOLD="-80"
-DEFAULT_INTERVAL=60
-MIN_INTERVAL=10
+DEFAULT_INTERVAL=10
+MIN_INTERVAL=1
 TAG="ledtrig-uqmi"
 
 log_err()  { logger -t "$TAG" -p daemon.err  "$1"; }
@@ -107,6 +107,10 @@ while true; do
 		device=$(uci -q get system.$sec.device 2>/dev/null)
 		threshold=$(uci -q get system.$sec.threshold 2>/dev/null)
 		device="${device:-$DEFAULT_DEVICE}"
+		if [ -n "$threshold" ] && ! echo "$threshold" | grep -q '^-\{0,1\}[0-9]\+$'; then
+			log_err "Sección $sec: threshold '$threshold' inválido, uso ${DEFAULT_THRESHOLD}"
+			threshold=""
+		fi
 		threshold="${threshold:-$DEFAULT_THRESHOLD}"
 		key=$(safe_key "$device")
 		eval "rssi=\"\$rssi_$key\""
@@ -131,6 +135,7 @@ while true; do
 		else
 			value=0
 		fi
+		log_dbg "Sección $sec: rssi=${rssi:-N/A} threshold=$threshold -> $([ "$value" = 255 ] && echo ON || echo OFF) (sysfs=$sysfs)"
 
 		if echo "$value" > "$LEDS_PATH/$sysfs/brightness" 2>/dev/null; then
 			write_ok=1
