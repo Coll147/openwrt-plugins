@@ -18,8 +18,9 @@ return baseclass.extend({
 		o = s.option(form.Value, 'interval', _('Check interval (seconds)'));
 		o.placeholder = '5';
 		o.datatype = 'uinteger';
-		o.rmempty = true;
+		o.rmempty = false;
 		o.modalonly = true;
+		o.description = _('Ping check interval (seconds)');
 		o.depends('trigger', 'ping');
 
 		o = s.option(form.Flag, 'invert', _('Light on failure'));
