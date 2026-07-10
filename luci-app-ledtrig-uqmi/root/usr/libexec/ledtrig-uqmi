@@ -8,29 +8,19 @@
 #     distinto en cada vuelta, y el resultado se reutiliza para todos los
 #     LEDs que apunten a ese mismo device (evita saturar el módem).
 #   - El intervalo de sondeo es único para todo el demonio: se toma de la
-#     PRIMERA sección encontrada (en milisegundos); el 'interval' del
-#     resto de secciones se ignora.
+#     PRIMERA sección encontrada (en segundos); el 'interval' del resto
+#     de secciones se ignora.
 
 LEDS_PATH="/sys/class/leds"
 DEFAULT_DEVICE="/dev/cdc-wdm0"
 DEFAULT_THRESHOLD="-80"
-DEFAULT_INTERVAL_MS=10000
-MIN_INTERVAL_MS=100
+DEFAULT_INTERVAL=10
+MIN_INTERVAL=1
 TAG="ledtrig-uqmi"
 
 log_err()  { logger -t "$TAG" -p daemon.err  "$1"; }
 log_info() { logger -t "$TAG" -p daemon.info "$1"; }
 log_dbg()  { logger -t "$TAG" -p daemon.debug "$1"; }
-
-# Convierte milisegundos a un argumento válido para 'sleep' (X.YYY)
-ms_to_sleep_arg() {
-	ms=$1
-	echo "$ms" | grep -q '^[0-9]\+$' || ms=$DEFAULT_INTERVAL_MS
-	[ "$ms" -lt "$MIN_INTERVAL_MS" ] && ms=$MIN_INTERVAL_MS
-	sec=$((ms / 1000))
-	rem=$((ms % 1000))
-	printf '%d.%03d' "$sec" "$rem"
-}
 
 # Convierte un device (p.ej. /dev/cdc-wdm0) en un sufijo válido para
 # nombre de variable, para poder usarlo como "caché" con eval.
@@ -54,7 +44,7 @@ mkdir -p "$STATE_DIR"
 
 while true; do
 	led_found=0
-	interval_ms=""
+	interval=""
 	devices_seen=""
 	sections=""
 
@@ -64,14 +54,14 @@ while true; do
 		led_found=1
 		sections="$sections $sec"
 
-		if [ -z "$interval_ms" ]; then
+		if [ -z "$interval" ]; then
 			cfg_interval=$(uci -q get system.$sec.interval 2>/dev/null)
-			if [ -n "$cfg_interval" ] && echo "$cfg_interval" | grep -q '^[0-9]\+$'; then
-				interval_ms=$cfg_interval
+			if [ -n "$cfg_interval" ] && echo "$cfg_interval" | grep -q '^[0-9]\+$' && [ "$cfg_interval" -ge "$MIN_INTERVAL" ]; then
+				interval=$cfg_interval
 			else
-				interval_ms=$DEFAULT_INTERVAL_MS
+				interval=$DEFAULT_INTERVAL
 			fi
-			log_dbg "Intervalo global tomado de la sección $sec: ${interval_ms}ms (el resto de secciones lo ignoran)"
+			log_dbg "Intervalo global tomado de la sección $sec: ${interval}s (el resto de secciones lo ignoran)"
 		fi
 	done
 
@@ -161,5 +151,5 @@ while true; do
 		log_info "No hay ninguna sección system.@led[] con trigger='uqmi-rssi' configurada"
 	fi
 
-	sleep "$(ms_to_sleep_arg "${interval_ms:-$DEFAULT_INTERVAL_MS}")"
+	sleep "${interval:-$DEFAULT_INTERVAL}"
 done
