@@ -30,10 +30,12 @@ return baseclass.extend({
 		o.rmempty     = true;
 		o.modalonly   = true;
 		o.depends('trigger', 'uqmi-rssi');
-		o.description = _('Time between modem queries, in seconds (minimum 1s). ' +
-			'Only one uqmi-rssi LED\'s interval is used: if you configure several LEDs ' +
-			'of this type, the value from the first one is applied to all of them, and ' +
-			'a single modem query is shared between LEDs pointing at the same device, ' +
-			'to avoid flooding the modem with requests.');
-	}
+		o.description = _('Time between modem queries, in seconds (minimum 1s).');
+	},
+
+	// Only one uqmi-rssi LED interval is used: if you configure several LEDs
+	// of this type, the value from the first one is applied to all of them, and
+	// a single modem query is shared between LEDs pointing at the same device,
+	// to avoid flooding the modem with requests.
+	
 });

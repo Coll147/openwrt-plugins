@@ -31,7 +31,7 @@ safe_key() {
 log_info "Servicio iniciado (PID $$)"
 
 if ! command -v uqmi >/dev/null 2>&1; then
-	log_err "El binario 'uqmi' no está instalado (falta el paquete 'uqmi'). El LED nunca se activará sin él."
+	log_err "uqmi no está instalado"
 fi
 
 if [ ! -d "$LEDS_PATH" ]; then
